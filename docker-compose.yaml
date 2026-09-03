@@ -20,6 +20,7 @@ services:
     build:
       context: ./conduit-backend
       dockerfile: Dockerfile
+    image: conduit-backend:latest
     restart: unless-stopped
     env_file:
       - .env
@@ -40,6 +41,7 @@ services:
     build:
       context: ./conduit-frontend
       dockerfile: Dockerfile
+    image: conduit-frontend:latest
     restart: unless-stopped
     depends_on:
       - backend
