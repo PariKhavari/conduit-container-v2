@@ -46,7 +46,7 @@ services:
     depends_on:
       - backend
     ports:
-      - "8282:8080"
+      - "${FRONTEND_PORT:-8282}:8080"
     volumes:
       - backend-static:/app/staticfiles:ro
     networks:
