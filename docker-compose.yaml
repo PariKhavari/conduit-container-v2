@@ -24,8 +24,6 @@ services:
     restart: unless-stopped
     env_file:
       - .env
-    environment:
-      POSTGRES_HOST: database
     depends_on:
       database:
         condition: service_healthy
