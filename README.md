@@ -1,6 +1,6 @@
 # Conduit Container
 
-A fully containerized version of the **Conduit** application, consisting of a Django REST Framework backend and an Angular frontend, orchestrated together with PostgreSQL via Docker Compose.
+A fully containerized version of the **Conduit** application (a Medium.com clone), consisting of a Django REST Framework backend and an Angular frontend, orchestrated together with PostgreSQL via Docker Compose.
 
 ## Table of Contents
 
@@ -188,6 +188,8 @@ docker logs <container-name> > my-container-logs.txt
 - **psycopg2 version pin:** `psycopg2-binary` is pinned to `2.8.6` instead of a newer release. Versions `>= 2.9` introduced a change in how timezone offsets are returned, which is incompatible with this project's older Django version and causes Django admin pages to fail with a database-timezone assertion error at runtime, even though the database itself is correctly configured for UTC.
 - **Legacy dependency versions:** This project intentionally runs on older versions of Python, Django, and related packages to match the original (pre-Docker) codebase. As a result, some dependencies may carry known CVEs. This is a tradeoff made to keep the original application runnable rather than rewriting it against current dependency versions.
 - **Chrome address bar autocomplete on `/admin`:** Typing `/admin` (without a trailing slash) directly into Chrome's address bar can trigger Chrome's own autocomplete behavior before the request is even sent, which may not reflect the server's actual (correct) redirect behavior. This is a browser-specific quirk, not a server misconfiguration — verified via `curl`, the server always returns a relative redirect to `/admin/`. Use the full path with a trailing slash (`/admin/`) to avoid this.
+- **Article deletion returns 405:** Deleting an article (even as its own author) currently returns `405 Method Not Allowed`. This appears to be pre-existing backend behavior unrelated to containerization and is out of scope for this project, which focuses on the Docker/Compose setup rather than application-level bugfixing.
+- **Article deletion returns 405:** Deleting an article (even as its own author) currently returns `405 Method Not Allowed`. This appears to be pre-existing backend behavior unrelated to containerization and is out of scope for this project (which focuses on the Docker/Compose setup, not application-level bugfixing).
 
 > [!CAUTION]
 > As described in [Superuser Creation](#superuser-creation), if `DJANGO_SUPERUSER_PASSWORD` is not set (or too short), Django silently falls back to a hardcoded default password (`securepass`) for any superuser created via `createsuperuser`. Always set this variable explicitly in your `.env`.
@@ -196,7 +198,6 @@ docker logs <container-name> > my-container-logs.txt
 
 A few non-obvious issues were found and fixed while containerizing this project:
 
-- **Article publishing failed with 404:** The frontend's `ArticlesService.create()` sent requests to `/articles/` (with a trailing slash), but the backend's `DefaultRouter` is configured with `trailing_slash=False`, causing every "publish article" request to fail. Fixed by removing the trailing slash in `articles.service.ts`.
-- **Admin panel redirected to the wrong port:** Behind the nginx reverse proxy, a request to `/admin` (without a trailing slash) triggered a 301 redirect. By default, nginx returned an *absolute* redirect containing its own internal port (`8080`) instead of the publicly exposed port (`8282`), making the admin panel unreachable from outside. Fixed by adding `absolute_redirect off;` to `nginx.conf`, so nginx returns a relative redirect instead, which the browser correctly resolves against the URL it was actually called with.
-- **Backend Dockerfile: duplicated Debian archive fix:** The `sed` fix redirecting Debian's package sources (required since Debian Buster is EOL) was duplicated across both build stages. Refactored into a shared `base` stage that both `builder` and `runtime` build from.
-- **`entrypoint.sh` had Windows (CRLF) line endings:** This caused the container to fail on startup (`set: Illegal option -`) after certain edits made on Windows. Fixed by adding a `.gitattributes` file (`*.sh text eol=lf`) to enforce Unix line endings for shell scripts, regardless of the operating system used to edit them.
+- **Article publishing failed (404):** The frontend sent `POST /articles/` with a trailing slash, but the backend router uses `trailing_slash=False`. Fixed by removing the trailing slash in `articles.service.ts`.
+- **Admin panel redirected to the wrong port:** Behind the reverse proxy, `/admin` (no trailing slash) triggered a 301 redirect using nginx's internal port (`8080`) instead of the public port (`8282`). Fixed with `absolute_redirect off;` in `nginx.conf`, so nginx returns a relative redirect instead.
+- **`entrypoint.sh` had Windows (CRLF) line endings:** Caused the container to fail on startup (`set: Illegal option -`). Fixed with a `.gitattributes` file (`*.sh text eol=lf`) enforcing Unix line endings for shell scripts.
