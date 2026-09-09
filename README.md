@@ -6,9 +6,9 @@ A fully containerized version of the **Conduit** application, consisting of a Dj
 
 - [Description](#description)
 - [Tech Stack](#tech-stack)
+- [Quickstart](#quickstart)
 - [Services & Images](#services--images)
 - [Docker Architecture](#docker-architecture)
-- [Quickstart](#quickstart)
 - [Usage](#usage)
   - [Environment Variables](#environment-variables)
   - [Configuration & Customization](#configuration--customization)
@@ -17,6 +17,7 @@ A fully containerized version of the **Conduit** application, consisting of a Dj
 - [Testing the Setup](#testing-the-setup)
 - [Logs](#logs)
 - [Known Limitations](#known-limitations)
+- [Notable Fixes](#notable-fixes)
 
 ## Description
 
@@ -34,27 +35,6 @@ The purpose of this repository is to demonstrate how an older, previously non-co
 - **Backend:** Python 3.6, Django, Django REST Framework, Gunicorn (WSGI server)
 - **Database:** PostgreSQL 15 (Alpine)
 - **Orchestration:** Docker, Docker Compose
-
-## Services & Images
-
-| Service | Image | Tag | Notes |
-|---|---|---|---|
-| `database` | `postgres` | `15-alpine` | Official image, unmodified |
-| `backend` | `conduit-backend` | `latest` (locally built) | Built from `conduit-backend/Dockerfile` |
-| `frontend` | `conduit-frontend` | `latest` (locally built) | Built from `conduit-frontend/Dockerfile`, based on `nginxinc/nginx-unprivileged:1.25-alpine` |
-
-## Docker Architecture
-
-Both `Dockerfile`s use **multi-stage builds** to keep the final image size (and attack surface) as small as possible:
-
-- **Backend** (`conduit-backend/Dockerfile`):
-  - Stage 1 (`builder`) installs build tools (`build-essential`, `libpq-dev`) and compiles the Python dependencies from `requirements.txt` into an isolated `/install` folder.
-  - Stage 2 (`runtime`) starts from a clean base image, copies **only** the already-installed packages (`COPY --from=builder /install /usr/local`) and the application code, and runs everything as a non-root user (`appuser`). None of the compiler tools from Stage 1 end up in the final image.
-- **Frontend** (`conduit-frontend/Dockerfile`):
-  - Stage 1 (`build`) uses Node.js to install dependencies (`npm ci`) and compile the Angular application into static production files.
-  - Stage 2 (`runtime`) copies **only** the resulting static files (`COPY --from=build /app/dist/angular-conduit /usr/share/nginx/html`) into a lightweight, unprivileged nginx image. Node.js, `node_modules`, and the TypeScript source code never end up in the final image.
-
-This means the images shipped to production contain only what's needed to *run* the application, not what was needed to *build* it, resulting in smaller images and a reduced surface for potential vulnerabilities.
 
 ## Quickstart
 
@@ -88,6 +68,30 @@ Once all three containers (`database`, `backend`, `frontend`) report as `Up` (an
 http://<host-ip>:8282
 ```
 
+A Django superuser is created automatically on first startup — see [Superuser Creation](#superuser-creation) below.
+
+## Services & Images
+
+| Service | Image | Tag | Notes |
+|---|---|---|---|
+| `database` | `postgres` | `15-alpine` | Official image, unmodified |
+| `backend` | `conduit-backend` | `latest` (locally built) | Built from `conduit-backend/Dockerfile` |
+| `frontend` | `conduit-frontend` | `latest` (locally built) | Built from `conduit-frontend/Dockerfile`, based on `nginxinc/nginx-unprivileged:1.25-alpine` |
+
+## Docker Architecture
+
+Both `Dockerfile`s use **multi-stage builds** to keep the final image size (and attack surface) as small as possible:
+
+- **Backend** (`conduit-backend/Dockerfile`):
+  - A shared `base` stage applies a one-time fix (redirecting Debian's package sources to the archive, since Debian Buster is EOL), used by both stages below so the fix isn't duplicated.
+  - Stage `builder` installs build tools (`build-essential`, `libpq-dev`) and compiles the Python dependencies from `requirements.txt` into an isolated `/install` folder.
+  - Stage `runtime` starts from `base`, copies **only** the already-installed packages (`COPY --from=builder /install /usr/local`) and the application code, and runs everything as a non-root user (`appuser`). None of the compiler tools from the `builder` stage end up in the final image.
+- **Frontend** (`conduit-frontend/Dockerfile`):
+  - Stage `build` uses Node.js to install dependencies (`npm ci`) and compile the Angular application into static production files.
+  - Stage `runtime` copies **only** the resulting static files (`COPY --from=build /app/dist/angular-conduit /usr/share/nginx/html`) into a lightweight, unprivileged nginx image. Node.js, `node_modules`, and the TypeScript source code never end up in the final image.
+
+This means the images shipped to production contain only what's needed to *run* the application, not what was needed to *build* it, resulting in smaller images and a reduced surface for potential vulnerabilities.
+
 ## Usage
 
 ### Environment Variables
@@ -96,18 +100,26 @@ All configuration is provided via a `.env` file at the project root (not committ
 
 | Variable | Used by | Purpose |
 |---|---|---|
+| `FRONTEND_PORT` | frontend | Host port the application is published on (default `8282`) |
 | `POSTGRES_DB` | database, backend | Name of the Postgres database |
 | `POSTGRES_USER` | database, backend | Postgres username |
 | `POSTGRES_PASSWORD` | database, backend | Postgres password |
+| `POSTGRES_HOST` | backend | Hostname of the database service (default `database`, i.e. the Compose service name — only change this if connecting to an external database) |
+| `POSTGRES_PORT` | backend | Port the database listens on (default `5432`) |
 | `DJANGO_ALLOWED_HOSTS` | backend | Comma-separated list of hostnames/IPs Django will accept requests for |
-| `DJANGO_SUPERUSER_PASSWORD` | backend | See [Superuser Creation](#superuser-creation) below — this is **not** a normal env var, it has special behavior |
+| `DJANGO_SUPERUSER_USERNAME` | backend | Username for the automatically created Django admin superuser |
+| `DJANGO_SUPERUSER_EMAIL` | backend | Email for the automatically created Django admin superuser |
+| `DJANGO_SUPERUSER_PASSWORD` | backend | Password for the automatically created Django admin superuser — see [Superuser Creation](#superuser-creation) below, this variable has special behavior |
 
 > [!WARNING]
 > Avoid special characters such as `$`, `&`, or `*` in `POSTGRES_PASSWORD` or `DJANGO_SUPERUSER_PASSWORD`. Docker Compose interprets `$` as the start of a variable substitution, which can silently produce a different password than the one you intended (leading to authentication failures that are hard to diagnose). Stick to alphanumeric characters for these values.
 
 ### Configuration & Customization
 
-- **Changing the exposed port:** The frontend is published on port `8282` by default (`8282:8080` in `docker-compose.yaml`). To change the externally reachable port, edit the `ports` mapping under the `frontend` service.
+- **Changing the exposed port:** The frontend is published on port `8282` by default. This is configurable via the `FRONTEND_PORT` variable in `.env` — change it and recreate the frontend container:
+  ```bash
+  docker compose up -d --force-recreate frontend
+  ```
 - **Allowing a different host/IP:** If you deploy this to a different server, update `DJANGO_ALLOWED_HOSTS` in `.env` to include that server's IP address or domain name, then recreate the backend container:
   ```bash
   docker compose up -d --force-recreate backend
@@ -121,22 +133,19 @@ All configuration is provided via a `.env` file at the project root (not committ
 
 ### Superuser Creation
 
-To create a Django admin superuser:
+A Django admin superuser is created **automatically** on container startup, based on the `DJANGO_SUPERUSER_USERNAME`, `DJANGO_SUPERUSER_EMAIL`, and `DJANGO_SUPERUSER_PASSWORD` values in `.env` — no manual command required.
+
+> [!IMPORTANT]
+> The custom `UserManager.create_superuser()` method in this codebase (`conduit/apps/authentication/models.py`) always sets the password from the `DJANGO_SUPERUSER_PASSWORD` environment variable (if set and at least 4 characters long), falling back to the hardcoded password `securepass` otherwise. This is pre-existing application behavior, not something introduced by containerization.
+
+> [!TIP]
+> Login to the Django admin requires the **email address**, not the username, since the custom `User` model uses email as its `USERNAME_FIELD`.
+
+If you ever need to create an **additional** superuser manually:
 
 ```bash
 docker compose exec backend python manage.py createsuperuser
 ```
-
-> [!IMPORTANT]
-> The custom `UserManager.create_superuser()` method in this codebase (`conduit/apps/authentication/models.py`) does **not** use the password you type interactively at the prompt. Instead, it always overrides it with:
->
-> - the value of the `DJANGO_SUPERUSER_PASSWORD` environment variable, if it is set and at least 4 characters long, or
-> - the hardcoded fallback password `securepass`, if the variable is unset or too short.
->
-> This means the only way to control your superuser's actual password is to set `DJANGO_SUPERUSER_PASSWORD` in `.env` **before** running `createsuperuser`. This is pre-existing application behavior (not something introduced by containerization) and applies equally to a classic, non-Docker local installation of this backend.
-
-> [!TIP]
-> Login to the Django admin requires the **email address**, not the username, since the custom `User` model uses email as its `USERNAME_FIELD`.
 
 ### Static Files
 
@@ -149,6 +158,8 @@ Before considering the deployment complete, the following was verified:
 - The frontend is reachable at `http://<host-ip>:8282`.
 - The backend runs via Gunicorn (a WSGI server), **not** Django's development server (`manage.py runserver`).
 - Navigating through the app (articles, tags, profiles) loads data correctly from the API.
+- Creating, favoriting, and viewing articles works correctly.
+- The Django admin panel is reachable and the superuser can log in.
 - Containers automatically restart after an internal crash, thanks to `restart: unless-stopped`.
 
 > [!NOTE]
@@ -176,6 +187,16 @@ docker logs <container-name> > my-container-logs.txt
 
 - **psycopg2 version pin:** `psycopg2-binary` is pinned to `2.8.6` instead of a newer release. Versions `>= 2.9` introduced a change in how timezone offsets are returned, which is incompatible with this project's older Django version and causes Django admin pages to fail with a database-timezone assertion error at runtime, even though the database itself is correctly configured for UTC.
 - **Legacy dependency versions:** This project intentionally runs on older versions of Python, Django, and related packages to match the original (pre-Docker) codebase. As a result, some dependencies may carry known CVEs. This is a tradeoff made to keep the original application runnable rather than rewriting it against current dependency versions.
+- **Chrome address bar autocomplete on `/admin`:** Typing `/admin` (without a trailing slash) directly into Chrome's address bar can trigger Chrome's own autocomplete behavior before the request is even sent, which may not reflect the server's actual (correct) redirect behavior. This is a browser-specific quirk, not a server misconfiguration — verified via `curl`, the server always returns a relative redirect to `/admin/`. Use the full path with a trailing slash (`/admin/`) to avoid this.
 
 > [!CAUTION]
-> As described in [Superuser Creation](#superuser-creation), if `DJANGO_SUPERUSER_PASSWORD` is not set (or too short), Django silently falls back to a hardcoded default password (`securepass`) for any superuser created via `createsuperuser`. Always set this variable explicitly in your `.env` before creating a superuser.
+> As described in [Superuser Creation](#superuser-creation), if `DJANGO_SUPERUSER_PASSWORD` is not set (or too short), Django silently falls back to a hardcoded default password (`securepass`) for any superuser created via `createsuperuser`. Always set this variable explicitly in your `.env`.
+
+## Notable Fixes
+
+A few non-obvious issues were found and fixed while containerizing this project:
+
+- **Article publishing failed with 404:** The frontend's `ArticlesService.create()` sent requests to `/articles/` (with a trailing slash), but the backend's `DefaultRouter` is configured with `trailing_slash=False`, causing every "publish article" request to fail. Fixed by removing the trailing slash in `articles.service.ts`.
+- **Admin panel redirected to the wrong port:** Behind the nginx reverse proxy, a request to `/admin` (without a trailing slash) triggered a 301 redirect. By default, nginx returned an *absolute* redirect containing its own internal port (`8080`) instead of the publicly exposed port (`8282`), making the admin panel unreachable from outside. Fixed by adding `absolute_redirect off;` to `nginx.conf`, so nginx returns a relative redirect instead, which the browser correctly resolves against the URL it was actually called with.
+- **Backend Dockerfile: duplicated Debian archive fix:** The `sed` fix redirecting Debian's package sources (required since Debian Buster is EOL) was duplicated across both build stages. Refactored into a shared `base` stage that both `builder` and `runtime` build from.
+- **`entrypoint.sh` had Windows (CRLF) line endings:** This caused the container to fail on startup (`set: Illegal option -`) after certain edits made on Windows. Fixed by adding a `.gitattributes` file (`*.sh text eol=lf`) to enforce Unix line endings for shell scripts, regardless of the operating system used to edit them.
